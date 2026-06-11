@@ -4,8 +4,8 @@ This repo authenticates GitHub Actions to Cloudsmith with no stored API key, usi
 Connect (OIDC). It also shows how Cloudsmith dynamic mapping routes one OIDC config to
 different service accounts based on a single claim.
 
-Every payload below is copied from a real run of the [`demo` workflow](../../actions/workflows/demo.yml).
-Read this alongside a run and the logs will match.
+The payloads below are real, copied from a run of the demo workflow. Read top to bottom to
+follow how a GitHub token becomes a Cloudsmith token.
 
 ## 1. The problem OIDC solves
 
@@ -20,11 +20,10 @@ token when they match a config you set up ahead of time. Nothing long-lived is s
 
 ## 2. The decoded GitHub token
 
-The `static-whoami` job prints this under "GitHub OIDC token (decoded)". A JWT has three
-base64url parts: header, payload, and signature. The decoder shows the header and payload and
-redacts the signature.
+A JWT has three base64url parts: header, payload, and signature. Here are the header and
+payload of a token from a run in the `production` environment.
 
-Header (from the `dynamic-production` job):
+Header:
 
 ```json
 {
@@ -57,13 +56,9 @@ Payload:
 }
 ```
 
-Each field is a claim. `iat` and `exp` are 300 seconds apart, so the token expires five
-minutes after GitHub issues it.
-
-The decoder never prints the signature. The signature is the only part that proves the token
-is authentic, so printing it could let someone replay it or reassemble a working token. The
-header and payload are safe to read, and on their own they cannot be turned back into a token
-that passes verification.
+Each field is a claim: a fact GitHub asserts about this run. `iat` and `exp` are 300 seconds
+apart, so the token expires five minutes after GitHub issues it. The signature, which is not
+shown, is what lets a verifier prove GitHub really issued these claims.
 
 ## 3. The issuer
 
@@ -100,8 +95,8 @@ curl -s "$jwks_uri" | jq .
 ```
 
 The response is a set of public keys, each with a key id (`kid`). GitHub signs each token with
-one private key and records that key's `kid` in the token header. The production token header
-above has `kid: 38826b17-6a30-5f9b-b169-8beb8202f723`, and that exact key is in the live set:
+one private key and records that key's `kid` in the token header. The header in section 2 has
+`kid: 38826b17-6a30-5f9b-b169-8beb8202f723`, and that exact key is in the live set:
 
 ```json
 {
@@ -113,8 +108,8 @@ above has `kid: 38826b17-6a30-5f9b-b169-8beb8202f723`, and that exact key is in 
 }
 ```
 
-Cloudsmith reads the `kid` from the header, fetches the matching public key, and verifies the
-signature with it. It caches the key set, so it does not refetch on every request.
+A verifier reads the `kid` from the header, fetches the matching public key, and checks the
+signature with it. Cloudsmith caches the key set, so it does not refetch on every request.
 
 ## 6. How Cloudsmith validates the token
 
@@ -131,7 +126,7 @@ Any failure rejects the exchange.
 ## 7. Claim assertions
 
 Signature and the standard claims are not enough. Cloudsmith also requires the claims you
-configure. Both providers in `terraform/main.tf` require:
+configure. This demo requires:
 
 ```hcl
 claims = {
@@ -145,15 +140,10 @@ So only this repository authenticates. Claim values take a `.*` wildcard, for ex
 
 ## 8. The Cloudsmith configuration
 
-The Cloudsmith side is Terraform in [`terraform/`](terraform/): three service accounts
-(`demo-static`, `demo-prod`, `demo-staging`), one static `cloudsmith_oidc` provider, and one
-dynamic one.
-
-The `provision` job in the demo workflow runs `terraform apply` and publishes the created
-service-account slugs as job outputs. The `static-whoami` and `dynamic-*` jobs read those slugs
-from the `SERVICE_SLUG` env var, so no slug is hardcoded. Terraform state lives in the Actions
-cache, so the apply is a no-op create after the first run. The same resources appear under
-Settings → OpenID Connect in the `iduffy-demo` org.
+On the Cloudsmith side you create one or more OIDC providers and the service accounts each
+provider can authenticate as. This demo has three service accounts (`demo-static`, `demo-prod`,
+`demo-staging`), one static provider, and one dynamic provider. You can see them under
+Settings → OpenID Connect in the org.
 
 ## 9. Static mapping
 
@@ -165,10 +155,9 @@ resource "cloudsmith_oidc" "static" {
 }
 ```
 
-One provider maps to a fixed service account. Any token that matches the claims acts as
-`demo-static`, and the `static-whoami` job's `whoami` returns `"slug": "demo-static"`. With one
-repo this is fine. With fifty repos that each need their own identity you maintain fifty of
-these, which is the problem dynamic mapping solves.
+A static provider maps to a fixed service account. Any token that matches the claims
+authenticates as `demo-static`. If many repositories or environments each need their own
+identity, you maintain a separate provider for each. Dynamic mapping removes that.
 
 ## 10. Dynamic mapping
 
@@ -188,14 +177,14 @@ resource "cloudsmith_oidc" "dynamic" {
 }
 ```
 
-One config routes on the value of the `environment` claim:
+One provider routes on the value of the `environment` claim:
 
-| Job | `environment` claim | Authenticates as |
-|---|---|---|
-| `dynamic-production` | `production` | `demo-prod` |
-| `dynamic-staging` | `staging` | `demo-staging` |
+| `environment` claim | Authenticates as |
+|---|---|
+| `production` | `demo-prod` |
+| `staging` | `demo-staging` |
 
-The `dynamic-production` job exchanges its GitHub token for a Cloudsmith token:
+A token from the `production` environment exchanges for a Cloudsmith token:
 
 ```json
 {
@@ -212,7 +201,7 @@ The `dynamic-production` job exchanges its GitHub token for a Cloudsmith token:
 }
 ```
 
-Then `GET /v1/user/self/` confirms the identity:
+And `GET /v1/user/self/` confirms the identity:
 
 ```json
 {
@@ -224,14 +213,14 @@ Then `GET /v1/user/self/` confirms the identity:
 }
 ```
 
-Run `dynamic-production` and `dynamic-staging` and compare: same config, same action, a
-different identity, decided by the `environment` claim.
+The same config, exercised from the `staging` environment, authenticates as `demo-staging`
+instead. The identity is decided by the `environment` claim.
 
 ### The security gate
 
-The caller still names the `service_slug` it wants, and the token's claim value has to map to
-that exact account. The `negative-staging-asks-for-prod` job runs in `environment: staging` but
-asks for `demo-prod`. Cloudsmith returns 401:
+A request still names the service account it wants, and the token's claim value has to map to
+that exact account. A token from the `staging` environment that asks for `demo-prod` is
+rejected with a 401:
 
 ```json
 {
@@ -240,17 +229,3 @@ asks for `demo-prod`. Cloudsmith returns 401:
 ```
 
 `staging` maps to `demo-staging`, so a staging workflow cannot get a production identity.
-
-### Scaling past one repo
-
-This demo routes on `environment` so a single repo can show the behaviour. To cover many repos,
-set `mapping_claim = "repository"` and add one `dynamic_mappings` entry per repo: one provider
-config for the whole org, each repo pinned to its own service account.
-
-## Running it yourself
-
-1. Set the `CLOUDSMITH_API_KEY` repo secret to a Cloudsmith service-account key with Manager
-   rights on `iduffy-demo`.
-2. Push a commit, or run the demo workflow from the Actions tab. The `provision` job builds the
-   Cloudsmith config with Terraform, and the other jobs do the token exchange and `whoami`.
-3. Read the job logs. Every JWT is decoded inline, with the signature redacted.
