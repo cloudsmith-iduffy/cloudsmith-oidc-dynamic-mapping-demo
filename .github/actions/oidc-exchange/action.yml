@@ -1,0 +1,86 @@
+name: oidc-exchange
+description: Request a GitHub OIDC token, decode it, exchange it for a Cloudsmith JWT, decode that, and call whoami.
+
+inputs:
+  service_slug:
+    description: Cloudsmith service account slug to authenticate as.
+    required: true
+  namespace:
+    description: Cloudsmith organization slug.
+    required: false
+    default: iduffy-demo
+  audience:
+    description: Audience to request in the GitHub OIDC token.
+    required: false
+    default: cloudsmith
+  expect_rejection:
+    description: If 'true', the exchange is expected to be rejected (non-2xx) and the step fails if it succeeds.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Request GitHub OIDC token
+      shell: bash
+      run: |
+        set -euo pipefail
+        github_token="$(curl -sS \
+          -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${{ inputs.audience }}" | jq -r '.value')"
+        if [ -z "${github_token}" ] || [ "${github_token}" = "null" ]; then
+          echo "Failed to obtain GitHub OIDC token"; exit 1
+        fi
+        echo "::add-mask::${github_token}"
+        echo "github_token=${github_token}" >> "${GITHUB_ENV}"
+
+    - name: Decode the GitHub OIDC token (this is what GitHub signs and gives us)
+      shell: bash
+      run: |
+        echo "### GitHub OIDC token (decoded) ###"
+        "${GITHUB_WORKSPACE}/scripts/decode-jwt.sh" "${github_token}"
+
+    - name: Exchange the GitHub token for a Cloudsmith token
+      shell: bash
+      run: |
+        set -euo pipefail
+        body="$(jq -nc --arg s "${{ inputs.service_slug }}" --arg t "${github_token}" \
+          '{service_slug:$s, oidc_token:$t}')"
+        response="$(curl -sS -w $'\n%{http_code}' -X POST \
+          "https://api.cloudsmith.io/v1/openid/${{ inputs.namespace }}/" \
+          -H "Content-Type: application/json" \
+          -d "${body}")"
+        http_code="$(tail -n1 <<<"${response}")"
+        payload="$(sed '$d' <<<"${response}")"
+        echo "HTTP ${http_code} from token exchange (service_slug=${{ inputs.service_slug }})"
+
+        if [ "${{ inputs.expect_rejection }}" = "true" ]; then
+          if [ "${http_code}" -ge 200 ] && [ "${http_code}" -lt 300 ]; then
+            echo "EXPECTED REJECTION but exchange SUCCEEDED — dynamic mapping gate failed!"; exit 1
+          fi
+          echo "Correctly rejected. Cloudsmith said:"; echo "${payload}" | jq . || echo "${payload}"
+          exit 0
+        fi
+
+        if [ "${http_code}" -lt 200 ] || [ "${http_code}" -ge 300 ]; then
+          echo "Exchange failed: ${payload}"; exit 1
+        fi
+        cloudsmith_token="$(jq -r '.token' <<<"${payload}")"
+        echo "::add-mask::${cloudsmith_token}"
+        echo "cloudsmith_token=${cloudsmith_token}" >> "${GITHUB_ENV}"
+
+    - name: Decode the Cloudsmith token (issued after dynamic mapping resolved our identity)
+      if: inputs.expect_rejection != 'true'
+      shell: bash
+      run: |
+        echo "### Cloudsmith token (decoded) ###"
+        "${GITHUB_WORKSPACE}/scripts/decode-jwt.sh" "${cloudsmith_token}"
+
+    - name: whoami (prove the token authenticates as the mapped service account)
+      if: inputs.expect_rejection != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "### GET /v1/user/self/ ###"
+        curl -sS -H "Authorization: Bearer ${cloudsmith_token}" \
+          "https://api.cloudsmith.io/v1/user/self/" | jq .

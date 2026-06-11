@@ -1,0 +1,47 @@
+name: demo
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  static-whoami:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/oidc-exchange
+        with:
+          service_slug: demo-static
+
+  dynamic-production:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/oidc-exchange
+        with:
+          service_slug: demo-prod
+
+  dynamic-staging:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/oidc-exchange
+        with:
+          service_slug: demo-staging
+
+  negative-staging-asks-for-prod:
+    runs-on: ubuntu-latest
+    environment: staging
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/oidc-exchange
+        with:
+          service_slug: demo-prod
+          expect_rejection: "true"
