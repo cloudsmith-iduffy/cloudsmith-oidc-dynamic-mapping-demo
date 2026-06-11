@@ -18,7 +18,18 @@ describes exactly which repo, branch, and environment produced it. CI hands that
 Cloudsmith. Cloudsmith verifies GitHub's signature and the claims, and returns a Cloudsmith
 token when they match a config you set up ahead of time. Nothing long-lived is stored.
 
-## 2. The decoded GitHub token
+## 2. The problem OIDC with dynamic mapping solves
+
+Plain OIDC ties a provider config to a fixed set of service accounts. Every distinct identity,
+each repository, environment, or branch that needs its own permissions, needs its own provider
+config. With a handful of repos that is fine. With a hundred, you are creating and maintaining a
+hundred near-identical configs, and every new repo is another one to add.
+
+Dynamic mapping collapses that to one config. You pick a claim to route on, list which claim
+values map to which service account, and a single provider serves every identity. Adding a repo
+or environment is one new mapping entry, not a new provider.
+
+## 3. The decoded GitHub token
 
 A JWT has three base64url parts: header, payload, and signature. Here are the header and
 payload of a token from a run in the `production` environment.
@@ -60,13 +71,13 @@ Each field is a claim: a fact GitHub asserts about this run. `iat` and `exp` are
 apart, so the token expires five minutes after GitHub issues it. The signature, which is not
 shown, is what lets a verifier prove GitHub really issued these claims.
 
-## 3. The issuer
+## 4. The issuer
 
 The `iss` claim names who minted the token: `https://token.actions.githubusercontent.com`.
 Cloudsmith trusts a token only when its `iss` matches the `provider_url` you configured. Find
 the issuer's keys and you can verify anything it signed, so the issuer is the root of trust.
 
-## 4. Discovery with .well-known/openid-configuration
+## 5. Discovery with .well-known/openid-configuration
 
 The issuer publishes how to verify its tokens at a fixed path:
 
@@ -85,9 +96,9 @@ The real response includes:
 ```
 
 `jwks_uri` points at the signing keys. `RS256` is the signing algorithm, which matches the
-`alg` in the header from section 2.
+`alg` in the header from section 3.
 
-## 5. JWKS, the issuer's public keys
+## 6. JWKS, the issuer's public keys
 
 ```bash
 jwks_uri=$(curl -s https://token.actions.githubusercontent.com/.well-known/openid-configuration | jq -r .jwks_uri)
@@ -95,7 +106,7 @@ curl -s "$jwks_uri" | jq .
 ```
 
 The response is a set of public keys, each with a key id (`kid`). GitHub signs each token with
-one private key and records that key's `kid` in the token header. The header in section 2 has
+one private key and records that key's `kid` in the token header. The header in section 3 has
 `kid: 38826b17-6a30-5f9b-b169-8beb8202f723`, and that exact key is in the live set:
 
 ```json
@@ -111,7 +122,7 @@ one private key and records that key's `kid` in the token header. The header in 
 A verifier reads the `kid` from the header, fetches the matching public key, and checks the
 signature with it. Cloudsmith caches the key set, so it does not refetch on every request.
 
-## 6. How Cloudsmith validates the token
+## 7. How Cloudsmith validates the token
 
 Cloudsmith checks, in order:
 
@@ -123,7 +134,7 @@ Cloudsmith checks, in order:
 
 Any failure rejects the exchange.
 
-## 7. Claim assertions
+## 8. Claim assertions
 
 Signature and the standard claims are not enough. Cloudsmith also requires the claims you
 configure. This demo requires:
@@ -138,14 +149,14 @@ claims = {
 So only this repository authenticates. Claim values take a `.*` wildcard, for example
 `repo:owner/name:.*`, which is how you widen or narrow the set of workflows you trust.
 
-## 8. The Cloudsmith configuration
+## 9. The Cloudsmith configuration
 
 On the Cloudsmith side you create one or more OIDC providers and the service accounts each
 provider can authenticate as. This demo has three service accounts (`demo-static`, `demo-prod`,
 `demo-staging`), one static provider, and one dynamic provider. You can see them under
 Settings → OpenID Connect in the org.
 
-## 9. Static mapping
+## 10. Static mapping
 
 ```hcl
 resource "cloudsmith_oidc" "static" {
@@ -156,10 +167,10 @@ resource "cloudsmith_oidc" "static" {
 ```
 
 A static provider maps to a fixed service account. Any token that matches the claims
-authenticates as `demo-static`. If many repositories or environments each need their own
-identity, you maintain a separate provider for each. Dynamic mapping removes that.
+authenticates as `demo-static`. This is the per-identity provider that section 2 described:
+one config, one identity.
 
-## 10. Dynamic mapping
+## 11. Dynamic mapping
 
 ```hcl
 resource "cloudsmith_oidc" "dynamic" {
