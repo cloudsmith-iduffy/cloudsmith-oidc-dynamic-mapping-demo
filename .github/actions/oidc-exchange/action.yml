@@ -25,7 +25,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        github_token="$(curl -sS \
+        github_token="$(curl -sS --connect-timeout 10 --max-time 30 \
           -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
           "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${{ inputs.audience }}" | jq -r '.value')"
         if [ -z "${github_token}" ] || [ "${github_token}" = "null" ]; then
@@ -46,7 +46,7 @@ runs:
         set -euo pipefail
         body="$(jq -nc --arg s "${{ inputs.service_slug }}" --arg t "${github_token}" \
           '{service_slug:$s, oidc_token:$t}')"
-        response="$(curl -sS -w $'\n%{http_code}' -X POST \
+        response="$(curl -sS --connect-timeout 10 --max-time 30 -w $'\n%{http_code}' -X POST \
           "https://api.cloudsmith.io/v1/openid/${{ inputs.namespace }}/" \
           -H "Content-Type: application/json" \
           -d "${body}")"
@@ -82,5 +82,5 @@ runs:
       run: |
         set -euo pipefail
         echo "### GET /v1/user/self/ ###"
-        curl -sS -H "Authorization: Bearer ${cloudsmith_token}" \
+        curl -sS --connect-timeout 10 --max-time 30 -H "Authorization: Bearer ${cloudsmith_token}" \
           "https://api.cloudsmith.io/v1/user/self/" | jq .
