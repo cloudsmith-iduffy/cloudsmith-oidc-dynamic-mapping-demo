@@ -7,6 +7,13 @@ different service accounts based on a single claim.
 The payloads below are real, copied from a run of the demo workflow. Read top to bottom to
 follow how a GitHub token becomes a Cloudsmith token.
 
+Think of it like a passport. GitHub is a passport office. For each workflow run it issues a
+short-lived passport (a token) stamped with who you are and where you came from: repo, branch,
+environment. The passport carries a seal only GitHub can produce. Cloudsmith is a border guard
+that trusts that office. It checks the seal is genuine, that the passport has not expired, and
+that it is stamped for entry here, then decides what you are allowed to do. No shared password
+ever changes hands.
+
 ## 1. The problem OIDC solves
 
 Most CI setups authenticate with a long-lived API key stored as a secret. It never expires,
@@ -20,9 +27,9 @@ token when they match a config you set up ahead of time. Nothing long-lived is s
 
 ## 2. The problem OIDC with dynamic mapping solves
 
-Plain OIDC ties a provider config to a fixed set of service accounts. Every distinct identity,
-each repository, environment, or branch that needs its own permissions, needs its own provider
-config. With a handful of repos that is fine. With a hundred, you are creating and maintaining a
+Plain OIDC ties a provider config to a fixed set of service accounts: non-human identities in
+Cloudsmith, each with its own permissions. Every distinct identity, each repository,
+environment, or branch that needs its own permissions, needs its own provider config. With a handful of repos that is fine. With a hundred, you are creating and maintaining a
 hundred near-identical configs, and every new repo is another one to add.
 
 Dynamic mapping collapses that to one config. You pick a claim to route on, list which claim
@@ -31,8 +38,9 @@ or environment is one new mapping entry, not a new provider.
 
 ## 3. The decoded GitHub token
 
-A JWT has three base64url parts: header, payload, and signature. Here are the header and
-payload of a token from a run in the `production` environment.
+The token is a JWT (JSON Web Token): the passport from above, written as text in three
+base64url parts: header, payload, and signature. Here are the header and payload of a token
+from a run in the `production` environment.
 
 Header:
 
@@ -120,7 +128,9 @@ one private key and records that key's `kid` in the token header. The header in 
 ```
 
 A verifier reads the `kid` from the header, fetches the matching public key, and checks the
-signature with it. Cloudsmith caches the key set, so it does not refetch on every request.
+signature with it. The signature works like the passport's seal: GitHub creates it with a
+private key only it holds, anyone can verify it with the matching public key, and nobody else
+can reproduce it. Cloudsmith caches the key set, so it does not refetch on every request.
 
 ## 7. How Cloudsmith validates the token
 
@@ -130,7 +140,8 @@ Cloudsmith checks, in order:
    `kid`. Change one byte of the payload and this fails.
 2. Expiry: `iat` and `exp` put the token inside its five-minute window.
 3. Issuer: `iss` matches the configured `provider_url`.
-4. Audience: `aud` matches the configured audience, `cloudsmith`.
+4. Audience: `aud` names who the token is for, and matches the configured audience,
+   `cloudsmith`.
 
 Any failure rejects the exchange.
 
