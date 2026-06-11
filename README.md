@@ -109,9 +109,13 @@ Everything on the Cloudsmith side is Terraform in [`terraform/`](terraform/):
 - 1 **static** `cloudsmith_oidc` provider.
 - 1 **dynamic** `cloudsmith_oidc` provider.
 
-It is applied by the [`provision` workflow](../../actions/workflows/provision.yml) (run it
-once, manually). You can also see these under **Settings → OpenID Connect** in the
-`iduffy-demo` Cloudsmith org.
+It is applied by the `provision` job of the [`demo` workflow](../../actions/workflows/demo.yml):
+that job runs `terraform apply` and publishes the created service-account slugs as job
+outputs, which the `static-whoami` / `dynamic-*` jobs receive as the `SERVICE_SLUG` env var —
+so the slugs are never hardcoded, they flow straight from Terraform. (Terraform state is kept
+in the Actions cache, so the apply is a no-op create on every run after the first.) You can
+also see these resources under **Settings → OpenID Connect** in the `iduffy-demo` Cloudsmith
+org.
 
 ## 9. Static mapping (the simple case)
 
@@ -173,5 +177,7 @@ provider config serving an entire org, each repository pinned to its own service
 
 1. Set the `CLOUDSMITH_API_KEY` repo secret (a Cloudsmith service account key with Manager
    rights on `iduffy-demo`).
-2. Run the **provision** workflow once (creates the Cloudsmith config).
-3. Push any commit (or run the **demo** workflow) and read the job logs.
+2. Push any commit (or run the **demo** workflow manually). The `provision` job creates the
+   Cloudsmith config with Terraform and the downstream jobs do the token exchange and `whoami`.
+3. Read the job logs — every JWT is decoded inline (header + payload; the signature is
+   redacted).

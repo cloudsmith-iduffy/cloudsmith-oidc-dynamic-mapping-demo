@@ -9,39 +9,94 @@ permissions:
   id-token: write
 
 jobs:
-  static-whoami:
+  # Runs Terraform to create the Cloudsmith service accounts + OIDC providers, then
+  # publishes the resulting service-account slugs as job outputs. Terraform state is
+  # persisted via the Actions cache so this is a no-op create on every run after the first.
+  provision:
     runs-on: ubuntu-latest
+    env:
+      CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+    outputs:
+      static_slug: ${{ steps.tf.outputs.static_slug }}
+      prod_slug: ${{ steps.tf.outputs.prod_slug }}
+      staging_slug: ${{ steps.tf.outputs.staging_slug }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore/persist Terraform state across runs
+        uses: actions/cache@v4
+        with:
+          path: terraform/terraform.tfstate
+          key: tfstate-v1-${{ github.run_id }}
+          restore-keys: |
+            tfstate-v1-
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform init
+        run: terraform -chdir=terraform init -input=false
+
+      - name: Terraform apply
+        run: terraform -chdir=terraform apply -auto-approve -input=false
+
+      - name: Publish service-account slugs as job outputs
+        id: tf
+        run: |
+          set -euo pipefail
+          slugs="$(terraform -chdir=terraform output -json service_slugs)"
+          {
+            echo "static_slug=$(jq -r .static <<<"${slugs}")"
+            echo "prod_slug=$(jq -r .prod <<<"${slugs}")"
+            echo "staging_slug=$(jq -r .staging <<<"${slugs}")"
+          } >> "${GITHUB_OUTPUT}"
+
+  static-whoami:
+    needs: provision
+    runs-on: ubuntu-latest
+    env:
+      SERVICE_SLUG: ${{ needs.provision.outputs.static_slug }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/oidc-exchange
         with:
-          service_slug: demo-static
+          service_slug: ${{ env.SERVICE_SLUG }}
 
   dynamic-production:
+    needs: provision
     runs-on: ubuntu-latest
     environment: production
+    env:
+      SERVICE_SLUG: ${{ needs.provision.outputs.prod_slug }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/oidc-exchange
         with:
-          service_slug: demo-prod
+          service_slug: ${{ env.SERVICE_SLUG }}
 
   dynamic-staging:
+    needs: provision
     runs-on: ubuntu-latest
     environment: staging
+    env:
+      SERVICE_SLUG: ${{ needs.provision.outputs.staging_slug }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/oidc-exchange
         with:
-          service_slug: demo-staging
+          service_slug: ${{ env.SERVICE_SLUG }}
 
   negative-staging-asks-for-prod:
+    needs: provision
     runs-on: ubuntu-latest
     environment: staging
     continue-on-error: true
+    env:
+      SERVICE_SLUG: ${{ needs.provision.outputs.prod_slug }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/oidc-exchange
         with:
-          service_slug: demo-prod
+          service_slug: ${{ env.SERVICE_SLUG }}
           expect_rejection: "true"
